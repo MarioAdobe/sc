@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: archiwizator-www
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: ACCESS_KEY
+        generateValue: true
+    healthCheckPath: /health
