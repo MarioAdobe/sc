@@ -52,6 +52,55 @@ function imageExtension(contentType) {
   const ct = (contentType || '').split(';')[0].trim().toLowerCase();
   return ({ 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif', 'image/svg+xml': 'svg', 'image/avif': 'avif', 'image/bmp': 'bmp', 'image/x-icon': 'ico' })[ct];
 }
+// Consent managers differ across publishers and often live in iframes.
+// Prefer an explicit refusal of optional tracking over accepting all cookies.
+async function dismissConsent(page, mode, warnings) {
+  const reject = /^(odrzu[cć](?: wszystkie)?|odm[oó]w(?: wszystkie)?|nie zgadzam si[eę]|nie akceptuj[eę]|odrzu[cć] opcjonalne|tylko niezb[eę]dne|tylko wymagane|bez zgody|kontynuuj bez zgody|reject all|decline all|deny all|necessary only|essential only|continue without accepting)$/i;
+  const manage = /^(ustawienia zaawansowane|zarz[aą]dzaj zgodami|ustawienia prywatno[sś]ci|dostosuj wyb[oó]r|manage options|manage preferences|customize|settings)$/i;
+  const maybeClick = async (expression) => {
+    for (const frame of page.frames()) {
+      for (const role of ['button', 'link']) {
+        const choice = frame.getByRole(role, { name: expression }).first();
+        try {
+          if (await choice.isVisible({ timeout: 250 })) {
+            await choice.click({ timeout: 1500 });
+            return true;
+          }
+        } catch { /* Try other consent frames and controls. */ }
+      }
+      // Some CMPs use non-semantic clickable elements.
+      const fallback = frame.locator('[role="button"], input[type="button"], input[type="submit"]').filter({ hasText: expression }).first();
+      try {
+        if (await fallback.isVisible({ timeout: 250 })) {
+          await fallback.click({ timeout: 1500 });
+          return true;
+        }
+      } catch { /* ignore */ }
+    }
+    return false;
+  };
+  try {
+    // CMP scripts may appear after the initial DOMContentLoaded event.
+    await page.waitForTimeout(1100);
+    if (await maybeClick(reject)) {
+      await page.waitForTimeout(650);
+      return;
+    }
+    if (await maybeClick(manage)) {
+      await page.waitForTimeout(600);
+      if (await maybeClick(reject)) {
+        await page.waitForTimeout(650);
+        return;
+      }
+    }
+    // Never click 'Accept all' as a fallback, or pretend that consent was resolved.
+    const overlay = await page.locator('[role="dialog"], [aria-modal="true"]').count().catch(() => 0);
+    if (overlay > 0) warnings.push(`${mode}: wykryto okno dialogowe; nie znaleziono bezpiecznej opcji odrzucenia zgód.`);
+  } catch (error) {
+    warnings.push(`${mode}: automatyczna obsługa zgód nie powiodła się: ${error.message}.`);
+  }
+}
+
 async function capture(browser, targetUrl, mode, images, state, warnings) {
   const mobile = mode === 'mobile';
   const context = await browser.newContext({
@@ -95,6 +144,7 @@ async function capture(browser, targetUrl, mode, images, state, warnings) {
     const response = await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
     if (!response) throw new Error('Strona nie zwróciła odpowiedzi.');
     if (response.status() >= 400) warnings.push(`${mode}: odpowiedź HTTP ${response.status()}.`);
+    await dismissConsent(page, mode, warnings);
     // Trigger lazy-loaded images without infinite scrolling.
     await page.evaluate(async () => {
       const step = Math.max(window.innerHeight, 600);
