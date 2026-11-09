@@ -57,47 +57,98 @@ function imageExtension(contentType) {
 async function dismissConsent(page, mode, warnings) {
   const reject = /^(odrzu[cć](?: wszystkie)?|odm[oó]w(?: wszystkie)?|nie zgadzam si[eę]|nie akceptuj[eę]|odrzu[cć] opcjonalne|tylko niezb[eę]dne|tylko wymagane|bez zgody|kontynuuj bez zgody|reject all|decline all|deny all|necessary only|essential only|continue without accepting)$/i;
   const manage = /^(ustawienia zaawansowane|zarz[aą]dzaj zgodami|ustawienia prywatno[sś]ci|dostosuj wyb[oó]r|manage options|manage preferences|customize|settings)$/i;
-  const maybeClick = async (expression) => {
+  const save = /^(zapisz (m[oó]j )?wyb[oó]r|zapisz preferencje|zapisz i zamknij|potwierd[zź] wyb[oó]r|zapisz ustawienia|save choices|save preferences|confirm choices)$/i;
+  const candidates = async pattern => {
     for (const frame of page.frames()) {
-      for (const role of ['button', 'link']) {
-        const choice = frame.getByRole(role, { name: expression }).first();
+      for (const locator of [
+        frame.getByRole('button', { name: pattern }),
+        frame.getByRole('link', { name: pattern }),
+        frame.locator('input[type="submit"],input[type="button"]').filter({ hasText: pattern }),
+        frame.locator('button,[role="button"],a').filter({ hasText: pattern })
+      ]) {
         try {
-          if (await choice.isVisible({ timeout: 250 })) {
-            await choice.click({ timeout: 1500 });
+          const choice = locator.first();
+          if (await choice.isVisible({ timeout: 350 })) {
+            await choice.click({ timeout: 1200 });
             return true;
           }
-        } catch { /* Try other consent frames and controls. */ }
+        } catch { /* Try remaining consent UI elements. */ }
       }
-      // Some CMPs use non-semantic clickable elements.
-      const fallback = frame.locator('[role="button"], input[type="button"], input[type="submit"]').filter({ hasText: expression }).first();
-      try {
-        if (await fallback.isVisible({ timeout: 250 })) {
-          await fallback.click({ timeout: 1500 });
-          return true;
-        }
-      } catch { /* ignore */ }
     }
     return false;
   };
+  const gazetaOverlay = async () => {
+    // Visual-only fallback: no consent is granted. Remove only a known Gazeta.pl
+    // cookie notice plus its dimming backdrop, not generic dialogs/paywalls.
+    let cleaned = false;
+    for (const frame of page.frames()) {
+      try {
+        const changed = await frame.evaluate(() => {
+          const visible = el => {
+            const s = getComputedStyle(el);
+            const r = el.getBoundingClientRect();
+            return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 150 && r.height > 120;
+          };
+          const text = el => (el.innerText || '').replace(/\s+/g, ' ').trim();
+          const matches = [...document.querySelectorAll('div,section,dialog,aside')]
+            .filter(el => visible(el) && text(el).includes('Droga Użytkowniczko, Drogi Użytkowniku') &&
+              text(el).includes('USTAWIENIA ZAAWANSOWANE') &&
+              text(el).includes('AKCEPTUJĘ'));
+          if (!matches.length) return false;
+          // Smallest enclosing modal with consent text and action controls.
+          const modal = matches.sort((a,b) => a.getBoundingClientRect().width * a.getBoundingClientRect().height -
+            b.getBoundingClientRect().width * b.getBoundingClientRect().height)[0];
+          const box = modal.getBoundingClientRect();
+          if (box.width < 200 || box.height < 200 || box.height > innerHeight * 1.2) return false;
+          modal.style.setProperty('display', 'none', 'important');
+          // Hide dimming layer only when it covers nearly the entire viewport.
+          for (const el of document.querySelectorAll('div,section')) {
+            if (el === modal || el.contains(modal) || modal.contains(el)) continue;
+            const style = getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            if ((style.position === 'fixed' || style.position === 'absolute') &&
+                rect.width >= innerWidth * .95 && rect.height >= innerHeight * .95 &&
+                style.backgroundColor !== 'rgba(0, 0, 0, 0)' &&
+                parseFloat(style.opacity || '1') < 1) {
+              el.style.setProperty('display', 'none', 'important');
+            }
+          }
+          document.documentElement.style.setProperty('overflow', 'auto', 'important');
+          document.body.style.setProperty('overflow', 'auto', 'important');
+          return true;
+        });
+        if (changed) cleaned = true;
+      } catch { /* inaccessible frame */ }
+    }
+    return cleaned;
+  };
   try {
-    // CMP scripts may appear after the initial DOMContentLoaded event.
-    await page.waitForTimeout(1100);
-    if (await maybeClick(reject)) {
-      await page.waitForTimeout(650);
-      return;
-    }
-    if (await maybeClick(manage)) {
-      await page.waitForTimeout(600);
-      if (await maybeClick(reject)) {
-        await page.waitForTimeout(650);
-        return;
+    await page.waitForTimeout(1700);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (await candidates(reject)) {
+        await page.waitForTimeout(900);
+        return 'rejected';
       }
+      if (await candidates(manage)) {
+        await page.waitForTimeout(1100);
+        if (await candidates(reject)) {
+          await page.waitForTimeout(900);
+          return 'rejected';
+        }
+        // Only save choices if the CMP explicitly offers a privacy-preserving
+        // selection. Never toggle unknown switches or accept-all as a fallback.
+      }
+      await page.waitForTimeout(500);
     }
-    // Never click 'Accept all' as a fallback, or pretend that consent was resolved.
-    const overlay = await page.locator('[role="dialog"], [aria-modal="true"]').count().catch(() => 0);
-    if (overlay > 0) warnings.push(`${mode}: wykryto okno dialogowe; nie znaleziono bezpiecznej opcji odrzucenia zgód.`);
+    if (await gazetaOverlay()) {
+      warnings.push(\`\${mode}: ukryto wizualnie okno zgód Gazeta.pl bez udzielenia zgody; serwis może ograniczać zawartość.\`);
+      return 'visual-only';
+    }
+    warnings.push(\`\${mode}: nie udało się automatycznie obsłużyć okna zgód.\`);
+    return 'unresolved';
   } catch (error) {
-    warnings.push(`${mode}: automatyczna obsługa zgód nie powiodła się: ${error.message}.`);
+    warnings.push(\`\${mode}: obsługa zgód: \${error.message}\`);
+    return 'unresolved';
   }
 }
 
