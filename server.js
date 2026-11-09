@@ -141,13 +141,13 @@ async function dismissConsent(page, mode, warnings) {
       await page.waitForTimeout(500);
     }
     if (await gazetaOverlay()) {
-      warnings.push(\`\${mode}: ukryto wizualnie okno zgód Gazeta.pl bez udzielenia zgody; serwis może ograniczać zawartość.\`);
+      warnings.push(`${mode}: ukryto wizualnie okno zgód Gazeta.pl bez udzielenia zgody; serwis może ograniczać zawartość.`);
       return 'visual-only';
     }
-    warnings.push(\`\${mode}: nie udało się automatycznie obsłużyć okna zgód.\`);
+    warnings.push(`${mode}: nie udało się automatycznie obsłużyć okna zgód.`);
     return 'unresolved';
   } catch (error) {
-    warnings.push(\`\${mode}: obsługa zgód: \${error.message}\`);
+    warnings.push(`${mode}: obsługa zgód: ${error.message}`);
     return 'unresolved';
   }
 }
