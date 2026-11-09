@@ -151,6 +151,76 @@ async function dismissConsent(page, mode, warnings) {
   }
 }
 
+// Prepare a stable article-focused screenshot without newsletter/promo overlays.
+async function prepareArticleShot(page, mode, warnings) {
+  try {
+    await page.keyboard.press('Escape').catch(() => {});
+    await page.evaluate(() => {
+      // Reset any scroll-induced navigation expansion and return to the top.
+      document.querySelectorAll('[aria-expanded="true"]').forEach(el => {
+        if (el.matches('button,[role="button"]') && /menu|nawigac|navigation/i.test(
+          [el.getAttribute('aria-label'), el.className, el.id].join(' '))) {
+          el.setAttribute('aria-expanded', 'false');
+        }
+      });
+      const isVisible = el => {
+        const r = el.getBoundingClientRect();
+        const st = getComputedStyle(el);
+        return r.width > 10 && r.height > 10 && st.display !== 'none' && st.visibility !== 'hidden';
+      };
+      const isArticlePart = el => Boolean(el.closest('article,[itemprop="articleBody"],[itemtype*="Article"]'));
+      // Remove only known sticky promo containers, not generic fixed navigation.
+      for (const el of document.querySelectorAll('div,aside,section')) {
+        if (!isVisible(el) || isArticlePart(el)) continue;
+        const style = getComputedStyle(el);
+        const box = el.getBoundingClientRect();
+        if (!['fixed','sticky'].includes(style.position)) continue;
+        const text = (el.innerText || '').replace(/\s+/g,' ').trim();
+        const knownPromo = /zobacz na gazeta\.pl|zobacz także na gazeta\.pl|przejdź do gazeta\.pl/i.test(text);
+        const smallBottomBar = style.position === 'fixed' && box.top > innerHeight * 0.55 &&
+          box.width > innerWidth * 0.65 && box.height < innerHeight * 0.38;
+        // Match the smallest overlay to avoid hiding enclosing content.
+        if ((knownPromo && box.height < innerHeight * .45 && box.width > innerWidth * .55) ||
+            (smallBottomBar && /gazeta\.pl|zamknij|promocja|reklama/i.test(text))) {
+          el.style.setProperty('display','none','important');
+        }
+      }
+      document.documentElement.style.setProperty('overflow','auto','important');
+      document.body.style.setProperty('overflow','auto','important');
+      window.scrollTo(0,0);
+    });
+    await page.waitForTimeout(350);
+  } catch (e) {
+    warnings.push(`${mode}: przygotowanie kadru: ${e.message}`);
+  }
+}
+
+async function getArticleClip(page, mode, warnings) {
+  return await page.evaluate(() => {
+    const vw = document.documentElement.clientWidth;
+    const total = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight);
+    const visible = el => {
+      if (!el) return false;
+      const s = getComputedStyle(el), r = el.getBoundingClientRect();
+      return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 150 && r.height > 20;
+    };
+    // Article pages typically have a single visible H1. Ignore menu/footer items.
+    const headings = [...document.querySelectorAll('main h1,article h1,h1')]
+      .filter(el => visible(el) && !el.closest('nav,footer,header[role="banner"],[role="dialog"]'));
+    const h1 = headings[0];
+    const article = [...document.querySelectorAll('article,[itemprop="articleBody"],main')]
+      .find(el => visible(el) && (h1 ? el.contains(h1) : true));
+    const focus = h1 || article;
+    const y = focus ? Math.max(0, Math.floor(focus.getBoundingClientRect().top + scrollY - 160)) : 0;
+    // Restrict capture to article content instead of site-wide footer/navigation.
+    const possibleEnd = article && article !== document.querySelector('main')
+      ? Math.ceil(article.getBoundingClientRect().bottom + scrollY + 80) : total;
+    const bottom = Math.min(total, Math.max(y + 500, possibleEnd));
+    return { x: 0, y, width: vw, height: Math.min(6500, Math.max(1, bottom-y)),
+      focused: Boolean(focus), fullHeight: total };
+  });
+}
+
 async function capture(browser, targetUrl, mode, images, state, warnings) {
   const mobile = mode === 'mobile';
   const context = await browser.newContext({
@@ -205,15 +275,12 @@ async function capture(browser, targetUrl, mode, images, state, warnings) {
       window.scrollTo(0, 0);
     }).catch(() => {});
     await page.waitForTimeout(700);
-    // Limit screenshot dimensions on small hosting instances to avoid OOM/502.
-    const dimensions = await page.evaluate(() => ({
-      width: document.documentElement.clientWidth,
-      height: Math.max(document.documentElement.scrollHeight, document.body.scrollHeight)
-    }));
-    const limit = 6500;
-    if (dimensions.height > limit) warnings.push(`${mode}: screenshot limited to ${limit}px due to server memory.`);
+    await prepareArticleShot(page, mode, warnings);
+    const clip = await getArticleClip(page, mode, warnings);
+    if (!clip.focused) warnings.push(`${mode}: nie znaleziono nagłówka artykułu; zapisano początek strony.`);
+    if (clip.fullHeight > clip.y + clip.height) warnings.push(`${mode}: screenshot obejmuje do ${clip.height}px od początku artykułu (limit pamięci).`);
     const screenshot = await page.screenshot({
-      clip: { x: 0, y: 0, width: dimensions.width, height: Math.min(dimensions.height, limit) },
+      clip: { x: clip.x, y: clip.y, width: clip.width, height: clip.height },
       animations: 'disabled',
       timeout: 20_000
     });
