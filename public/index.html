@@ -1,1 +1,39 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Archiwizator WWW — zapisz artykuł</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="head">
+      <div class="mark">▤</div>
+      <div><div class="eyebrow">NARZĘDZIE REDAKCYJNE</div><h1>Archiwizator WWW</h1><p>Jedna strona. Wszystkie materiały. Jeden ZIP.</p></div>
+    </header>
+    <section class="panel">
+      <div class="step">01 / ADRES STRONY</div>
+      <form id="form">
+        <label for="url">Wklej link do artykułu lub strony</label>
+        <input id="url" name="url" type="url" placeholder="https://www.przyklad.pl/artykul" required autocomplete="url" autofocus>
+        <div id="keyWrap" class="keyrow"><label for="key">Klucz dostępu <span>(tylko jeżeli hosting go wymaga)</span></label><input id="key" type="password" autocomplete="off" placeholder="Opcjonalny klucz ACCESS_KEY"></div>
+        <button type="submit" id="submit"><span id="buttonText">Przygotuj archiwum ZIP</span><span aria-hidden="true">↗</span></button>
+      </form>
+      <div id="status" class="status" role="status" aria-live="polite"></div>
+    </section>
+    <section class="contents">
+      <div class="step">02 / CO ZNAJDZIESZ W PLIKU</div>
+      <div class="grid">
+        <article><span class="symbol">▣</span><h2>Desktop</h2><p>Zrzut całej strony w rozdzielczości 1440 px.</p><small>desktop.png</small></article>
+        <article><span class="symbol">▯</span><h2>Mobile</h2><p>Zrzut całej strony w widoku smartfona.</p><small>mobile.png</small></article>
+        <article><span class="symbol">≡</span><h2>Czysty tekst</h2><p>Treść strony bez tagów HTML i formatowania.</p><small>tekst.txt</small></article>
+        <article><span class="symbol">▧</span><h2>Grafiki</h2><p>Załadowane obrazy w oryginalnych formatach, o ile dostępne.</p><small>grafiki/</small></article>
+      </div>
+    </section>
+    <footer>Archiwizator WWW <span>·</span> Strony z paywallem lub wymagające logowania mogą zwrócić tylko publiczną treść. Nie omija zabezpieczeń.</footer>
+  </main>
+  <script src="/app.js" defer></script>
+</body>
+</html>
 
