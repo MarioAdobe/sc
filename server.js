@@ -57,7 +57,6 @@ function imageExtension(contentType) {
 async function dismissConsent(page, mode, warnings) {
   const reject = /^(odrzu[cć](?: wszystkie)?|odm[oó]w(?: wszystkie)?|nie zgadzam si[eę]|nie akceptuj[eę]|odrzu[cć] opcjonalne|tylko niezb[eę]dne|tylko wymagane|bez zgody|kontynuuj bez zgody|reject all|decline all|deny all|necessary only|essential only|continue without accepting)$/i;
   const manage = /^(ustawienia zaawansowane|zarz[aą]dzaj zgodami|ustawienia prywatno[sś]ci|dostosuj wyb[oó]r|manage options|manage preferences|customize|settings)$/i;
-  const save = /^(zapisz (m[oó]j )?wyb[oó]r|zapisz preferencje|zapisz i zamknij|potwierd[zź] wyb[oó]r|zapisz ustawienia|save choices|save preferences|confirm choices)$/i;
   const candidates = async pattern => {
     for (const frame of page.frames()) {
       for (const locator of [
@@ -99,7 +98,7 @@ async function dismissConsent(page, mode, warnings) {
           const modal = matches.sort((a,b) => a.getBoundingClientRect().width * a.getBoundingClientRect().height -
             b.getBoundingClientRect().width * b.getBoundingClientRect().height)[0];
           const box = modal.getBoundingClientRect();
-          if (box.width < 200 || box.height < 200 || box.height > innerHeight * 1.2) return false;
+          if (box.width < 200 || box.height < 200) return false;
           modal.style.setProperty('display', 'none', 'important');
           // Hide dimming layer only when it covers nearly the entire viewport.
           for (const el of document.querySelectorAll('div,section')) {
@@ -108,8 +107,8 @@ async function dismissConsent(page, mode, warnings) {
             const rect = el.getBoundingClientRect();
             if ((style.position === 'fixed' || style.position === 'absolute') &&
                 rect.width >= innerWidth * .95 && rect.height >= innerHeight * .95 &&
-                style.backgroundColor !== 'rgba(0, 0, 0, 0)' &&
-                parseFloat(style.opacity || '1') < 1) {
+                ((style.backgroundColor.startsWith('rgba(') && Number(style.backgroundColor.split(',')[3]?.replace(')', '').trim()) > 0.1) ||
+                 (style.backgroundColor !== 'rgba(0, 0, 0, 0)' && parseFloat(style.opacity || '1') < 1))) {
               el.style.setProperty('display', 'none', 'important');
             }
           }
