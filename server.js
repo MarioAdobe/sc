@@ -16,9 +16,9 @@ app.use(express.json({ limit: '8kb' }));
 app.use('/api', rateLimit({ windowMs: 60_000, limit: 8, standardHeaders: 'draft-8', legacyHeaders: false }));
 app.get('/health', (_, res) => res.json({ ok: true }));
 
-const MAX_IMAGES = 90;
-const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
-const MAX_TOTAL_IMAGES = 45 * 1024 * 1024;
+const MAX_IMAGES = 40;
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+const MAX_TOTAL_IMAGES = 16 * 1024 * 1024;
 let busy = false; // Limits expensive Chromium usage to one archive at a time.
 
 function blockedIp(address) {
@@ -105,7 +105,18 @@ async function capture(browser, targetUrl, mode, images, state, warnings) {
       window.scrollTo(0, 0);
     }).catch(() => {});
     await page.waitForTimeout(700);
-    const screenshot = await page.screenshot({ fullPage: true, animations: 'disabled', timeout: 20_000 });
+    // Limit screenshot dimensions on small hosting instances to avoid OOM/502.
+    const dimensions = await page.evaluate(() => ({
+      width: document.documentElement.clientWidth,
+      height: Math.max(document.documentElement.scrollHeight, document.body.scrollHeight)
+    }));
+    const limit = 6500;
+    if (dimensions.height > limit) warnings.push(`${mode}: screenshot limited to ${limit}px due to server memory.`);
+    const screenshot = await page.screenshot({
+      clip: { x: 0, y: 0, width: dimensions.width, height: Math.min(dimensions.height, limit) },
+      animations: 'disabled',
+      timeout: 20_000
+    });
     const data = await page.evaluate(() => {
       const root = document.querySelector('article') || document.querySelector('main') || document.body;
       const clone = root.cloneNode(true);
