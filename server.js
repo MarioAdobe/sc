@@ -489,9 +489,28 @@ async function capture(browser, targetUrl, mode, warnings) {
     // interrupt an in-flight request and surface as a 502.
     await prepareArticleShot(page, mode, warnings);
     if (mode === 'desktop' && /(^|\.)sport\.pl$/i.test(new URL(page.url()).hostname)) {
-      const state = await articleVisibility(page);
+      // On Sport.pl the wide navigation can replace the story DOM entirely.
+      // Re-enter the same article in a narrower, still landscape viewport.
+      // This must be done before capturing, never by cropping the menu screenshot.
+      let state = await articleVisibility(page);
       if (!state.headline || state.paragraphs < 2) {
-        throw new Error('Sport.pl: zamiast artykułu widać menu. Desktop nie został zapisany; spróbuj ponownie.');
+        console.warn('Sport.pl wide desktop layout missing story:', state);
+        for (const width of [1024, 820]) {
+          await page.setViewportSize({ width, height: 900 });
+          await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+          await page.waitForTimeout(900);
+          await dismissConsent(page, mode, warnings);
+          await prepareArticleShot(page, mode, warnings);
+          state = await articleVisibility(page);
+          console.log('Sport.pl responsive recovery:', width, state);
+          if (state.headline && state.paragraphs >= 2) {
+            warnings.push('desktop: układ Sport.pl odzyskano przy szerokości ' + width + 'px.');
+            break;
+          }
+        }
+      }
+      if (!state.headline || state.paragraphs < 2) {
+        throw new Error('Sport.pl: serwis nie udostępnił artykułu w układach desktop/tablet. Spróbuj ponownie później.');
       }
     }
     const clip = await getArticleClip(page, mode, warnings);
