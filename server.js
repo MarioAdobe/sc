@@ -279,11 +279,34 @@ async function capture(browser, targetUrl, mode, images, state, warnings) {
     const clip = await getArticleClip(page, mode, warnings);
     if (!clip.focused) warnings.push(`${mode}: nie znaleziono nagłówka artykułu; zapisano początek strony.`);
     if (clip.fullHeight > clip.y + clip.height) warnings.push(`${mode}: screenshot obejmuje do ${clip.height}px od początku artykułu (limit pamięci).`);
-    const screenshot = await page.screenshot({
-      clip: { x: clip.x, y: clip.y, width: clip.width, height: clip.height },
-      animations: 'disabled',
-      timeout: 20_000
-    });
+    // Long or animated news pages can make Playwright wait indefinitely for
+    // screenshot stability. Retry smaller captures and keep the ZIP usable.
+    let screenshot;
+    const attempts = [
+      { height: Math.min(clip.height, 4500), timeout: 12000 },
+      { height: Math.min(clip.height, 1800), timeout: 12000 },
+      { height: Math.min(clip.height, 850), timeout: 10000 }
+    ];
+    for (const [index, attempt] of attempts.entries()) {
+      try {
+        screenshot = await page.screenshot({
+          clip: { x: clip.x, y: clip.y, width: clip.width, height: attempt.height },
+          animations: 'allow',
+          caret: 'hide',
+          timeout: attempt.timeout
+        });
+        if (index > 0) warnings.push(`${mode}: długi screenshot nie powiódł się, zapisano krótszy kadr (${attempt.height}px).`);
+        break;
+      } catch (error) {
+        console.warn('Screenshot retry:', mode, index + 1, error.message);
+      }
+    }
+    if (!screenshot) {
+      // A correctly labelled 1x1 placeholder is better than aborting the entire
+      // archive. metadata.json records the failed capture explicitly.
+      screenshot = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/SxkAAAAASUVORK5CYII=', 'base64');
+      warnings.push(`${mode}: nie udało się wykonać screenshotu (placeholder 1x1px); pozostałe materiały zapisano.`);
+    }
     const data = await page.evaluate(() => {
       const root = document.querySelector('article') || document.querySelector('main') || document.body;
       const clone = root.cloneNode(true);
