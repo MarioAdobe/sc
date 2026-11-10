@@ -16,7 +16,6 @@
     "archiver": "^7.0.1",
     "helmet": "^8.1.0",
     "express-rate-limit": "^8.1.0",
-    "ipaddr.js": "^2.2.0",
-    "sharp": "^0.34.4"
+    "ipaddr.js": "^2.2.0"
   }
 }
