@@ -20,7 +20,7 @@ app.get('/health', (_, res) => res.json({ ok: true }));
 const SHOT_HEIGHT = 4800; // Tall image for a vertical pan in After Effects.
 let busy = false; // Limits expensive Chromium usage to one archive at a time.
 
-const NON_EDITORIAL_HOSTS = /(^|\\.)(doubleclick\\.net|googlesyndication\\.com|googletagservices\\.com|google-analytics\\.com|analytics\\.google\\.com|adnxs\\.com|criteo\\.com|taboola\\.com|outbrain\\.com|scorecardresearch\\.com|quantserve\\.com)$/i;
+const NON_EDITORIAL_HOSTS = /(^|\.)(doubleclick\.net|googlesyndication\.com|googletagservices\.com|google-analytics\.com|analytics\.google\.com|adnxs\.com|criteo\.com|taboola\.com|outbrain\.com|scorecardresearch\.com|quantserve\.com)$/i;
 
 function blockedIp(address) {
   try {
