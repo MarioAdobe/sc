@@ -204,6 +204,18 @@ async function suppressGuardianConsentFrames(page, mode, warnings) {
   const details = [];
   for (const frame of page.frames()) {
     try {
+      if (frame !== page.mainFrame()) {
+        const isNotice = await frame.evaluate(() =>
+          /your privacy/i.test(document.body?.innerText || '') &&
+          /personal information|do not sell or share/i.test(document.body?.innerText || '')
+        ).catch(() => false);
+        if (isNotice) {
+          const iframe = await frame.frameElement();
+          await iframe.evaluate(el => el.style.setProperty('display', 'none', 'important'));
+          details.push('privacy-frame');
+          continue;
+        }
+      }
       const result = await frame.evaluate(() => {
         const matches = [];
         const walk = root => {
