@@ -9,6 +9,8 @@ import ipaddr from 'ipaddr.js';
 
 const app = express();
 app.disable('x-powered-by');
+// Render forwards requests through a single trusted reverse proxy.
+app.set('trust proxy', 1);
 app.use(helmet({ contentSecurityPolicy: { directives: { defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'"], imgSrc: ["'self'", 'data:'], connectSrc: ["'self'"] } } }));
 app.use(express.static('public', { extensions: ['html'] }));
 app.use(express.json({ limit: '8kb' }));
@@ -17,6 +19,8 @@ app.get('/health', (_, res) => res.json({ ok: true }));
 
 const SHOT_HEIGHT = 4800; // Tall image for a vertical pan in After Effects.
 let busy = false; // Limits expensive Chromium usage to one archive at a time.
+
+const NON_EDITORIAL_HOSTS = /(^|\\.)(doubleclick\\.net|googlesyndication\\.com|googletagservices\\.com|google-analytics\\.com|analytics\\.google\\.com|adnxs\\.com|criteo\\.com|taboola\\.com|outbrain\\.com|scorecardresearch\\.com|quantserve\\.com)$/i;
 
 function blockedIp(address) {
   try {
@@ -259,8 +263,12 @@ async function capture(browser, targetUrl, mode, warnings) {
       const req = route.request();
       const u = req.url();
       if (!/^https?:/i.test(u)) return route.abort();
-      try { await safeHttpUrl(u); await route.continue(); }
-      catch { await route.abort(); }
+      try {
+        const parsed = new URL(u);
+        if (NON_EDITORIAL_HOSTS.test(parsed.hostname)) return route.abort();
+        await safeHttpUrl(u);
+        await route.continue();
+      } catch { await route.abort(); }
     });
     const page = await context.newPage();
     page.on('crash', () => console.error('Chromium tab crashed:', mode));
@@ -308,7 +316,7 @@ app.post('/api/archive', async (req, res) => {
   busy = true;
   let browser;
   try {
-    browser = await chromium.launch({ headless: true, args: ['--disable-dev-shm-usage'] });
+    browser = await chromium.launch({ headless: true, args: ['--disable-dev-shm-usage', '--disable-gpu', '--disable-background-networking'] });
     const warnings = [];
     const desktop = await capture(browser, url, 'desktop', warnings);
     const mobile = await capture(browser, url, 'mobile', warnings);
