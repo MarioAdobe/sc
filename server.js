@@ -225,6 +225,7 @@ async function getArticleClip(page, mode, warnings) {
 // large Playwright screenshot timeouts and never substitutes a 1px placeholder.
 async function captureTallImage(page, clip, mode) {
   const height = Math.min(SHOT_HEIGHT, clip.height);
+  const scale = await page.evaluate(() => window.devicePixelRatio || 1);
   const tiles = [];
   for (let offset = 0; offset < height; offset += TILE_HEIGHT) {
     const tileHeight = Math.min(TILE_HEIGHT, height - offset);
@@ -233,11 +234,11 @@ async function captureTallImage(page, clip, mode) {
       clip: { x: clip.x, y: clip.y + offset, width: clip.width, height: tileHeight },
       animations: 'allow', caret: 'hide', timeout: 25000
     });
-    tiles.push({ input: shot, top: offset, left: 0 });
+    tiles.push({ input: shot, top: offset * scale, left: 0 });
   }
   if (!tiles.length) throw new Error(`${mode}: strona nie ma treści do zapisania.`);
   return sharp({
-    create: { width: clip.width, height, channels: 3, background: '#ffffff' },
+    create: { width: clip.width * scale, height: height * scale, channels: 3, background: '#ffffff' },
     limitInputPixels: 45000000
   }).composite(tiles).png({ compressionLevel: 6 }).toBuffer();
 }
@@ -245,7 +246,7 @@ async function captureTallImage(page, clip, mode) {
 async function capture(browser, targetUrl, mode, warnings) {
   const mobile = mode === 'mobile';
   const context = await browser.newContext({
-    ...(mobile ? { ...devices['iPhone 13'], deviceScaleFactor: 1 } : { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 }),
+    ...(mobile ? { ...devices['iPhone 13'], deviceScaleFactor: 2 } : { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 }),
     locale: 'pl-PL',
     serviceWorkers: 'block',
     acceptDownloads: false,
