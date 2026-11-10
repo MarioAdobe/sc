@@ -197,6 +197,49 @@ async function closeGuardianPrivacy(page, mode, warnings) {
   } else warnings.push(mode + ': nie udało się usunąć banera prywatności The Guardian.');
 }
 
+// Sourcepoint frequently renders the Guardian's privacy notice in a separate
+// cross-origin iframe. Remove that iframe visually; never grant consent.
+async function suppressGuardianConsentFrames(page, mode, warnings) {
+  if (!/(^|\.)theguardian\.com$/i.test(new URL(page.url()).hostname)) return;
+  const details = [];
+  for (const frame of page.frames()) {
+    try {
+      const result = await frame.evaluate(() => {
+        const matches = [];
+        const walk = root => {
+          for (const el of root.querySelectorAll('iframe,div,section,aside,dialog')) {
+            const id = [el.id, el.className, el.getAttribute('title'), el.getAttribute('src')].join(' ');
+            if (el.tagName === 'IFRAME' && /sp_message|sourcepoint|privacy-mgmt/i.test(id)) {
+              el.style.setProperty('display','none','important');
+              matches.push('iframe');
+              continue;
+            }
+            const st = getComputedStyle(el);
+            const box = el.getBoundingClientRect();
+            const txt = (el.innerText || '').slice(0,1500);
+            if (box.width > innerWidth * .65 && box.height > 50 &&
+                box.height < innerHeight * .85 &&
+                /your privacy/i.test(txt) &&
+                /do not sell or share|personal information|guardian news and media/i.test(txt) &&
+                (st.position === 'fixed' || st.position === 'sticky' || el.getAttribute('role') === 'dialog')) {
+              el.style.setProperty('display','none','important');
+              matches.push('banner');
+            }
+          }
+        };
+        walk(document);
+        return matches;
+      });
+      details.push(...result);
+    } catch (e) { console.warn('Consent frame inspection:', mode, e.message); }
+  }
+  if (details.length) {
+    warnings.push(mode + ': ukryto nakładki prywatności Guardian: ' + details.join(', '));
+    console.log('Guardian consent hidden:', mode, details.join(','));
+  } else console.log('Guardian consent frame detection: no matching overlay', mode,
+    page.frames().map(f=>f.url().slice(0,120)));
+}
+
 async function preloadArticleImages(page, mode, warnings) {
   try {
     await page.evaluate(() => {
@@ -355,9 +398,11 @@ async function capture(browser, targetUrl, mode, warnings) {
     if (response.status() >= 400) warnings.push(`${mode}: odpowiedź HTTP ${response.status()}.`);
     await dismissConsent(page, mode, warnings);
     await closeGuardianPrivacy(page, mode, warnings);
+    await suppressGuardianConsentFrames(page, mode, warnings);
     await preloadArticleImages(page, mode, warnings);
     await prepareArticleShot(page, mode, warnings);
     await closeGuardianPrivacy(page, mode, warnings);
+    await suppressGuardianConsentFrames(page, mode, warnings);
     const clip = await getArticleClip(page, mode, warnings);
     if (!clip.focused) warnings.push(`${mode}: nie znaleziono nagłówka artykułu; zapisano początek strony.`);
     if (clip.fullHeight > clip.y + Math.min(clip.height, SHOT_HEIGHT)) warnings.push(`${mode}: kadr ograniczono do ${SHOT_HEIGHT}px, aby zmieścił się na hostingu.`);
