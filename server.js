@@ -6,8 +6,6 @@ import { chromium, devices } from 'playwright';
 import dns from 'node:dns/promises';
 import net from 'node:net';
 import ipaddr from 'ipaddr.js';
-import sharp from 'sharp';
-sharp.cache(false);
 
 const app = express();
 app.disable('x-powered-by');
@@ -18,7 +16,6 @@ app.use('/api', rateLimit({ windowMs: 60_000, limit: 8, standardHeaders: 'draft-
 app.get('/health', (_, res) => res.json({ ok: true }));
 
 const SHOT_HEIGHT = 4800; // Tall image for a vertical pan in After Effects.
-const TILE_HEIGHT = 700;
 let busy = false; // Limits expensive Chromium usage to one archive at a time.
 
 function blockedIp(address) {
@@ -225,22 +222,27 @@ async function getArticleClip(page, mode, warnings) {
 // large Playwright screenshot timeouts and never substitutes a 1px placeholder.
 async function captureTallImage(page, clip, mode) {
   const height = Math.min(SHOT_HEIGHT, clip.height);
-  const scale = await page.evaluate(() => window.devicePixelRatio || 1);
-  const tiles = [];
-  for (let offset = 0; offset < height; offset += TILE_HEIGHT) {
-    const tileHeight = Math.min(TILE_HEIGHT, height - offset);
-    const shot = await page.screenshot({
-      type: 'jpeg', quality: 90,
-      clip: { x: clip.x, y: clip.y + offset, width: clip.width, height: tileHeight },
-      animations: 'allow', caret: 'hide', timeout: 25000
+  if (height < 300) throw new Error(`${mode}: zbyt krótki obszar artykułu do wykonania screenshotu.`);
+  // CDP captures the full requested rectangle in one operation without
+  // Playwright's screenshot stability/animation waiting or image stitching.
+  const client = await page.context().newCDPSession(page);
+  try {
+    const capture = client.send('Page.captureScreenshot', {
+      format: 'png',
+      captureBeyondViewport: true,
+      fromSurface: true,
+      clip: { x: clip.x, y: clip.y, width: clip.width, height, scale: 1 }
     });
-    tiles.push({ input: shot, top: offset * scale, left: 0 });
+    const timeout = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${mode}: upłynął limit czasu dla długiego zrzutu (45 s).`)), 45000)
+    );
+    const result = await Promise.race([capture, timeout]);
+    const image = Buffer.from(result.data, 'base64');
+    if (image.length < 1000) throw new Error(`${mode}: zapisany obraz jest pusty.`);
+    return image;
+  } finally {
+    await client.detach().catch(() => {});
   }
-  if (!tiles.length) throw new Error(`${mode}: strona nie ma treści do zapisania.`);
-  return sharp({
-    create: { width: clip.width * scale, height: height * scale, channels: 3, background: '#ffffff' },
-    limitInputPixels: 45000000
-  }).composite(tiles).png({ compressionLevel: 6 }).toBuffer();
 }
 
 async function capture(browser, targetUrl, mode, warnings) {
@@ -261,6 +263,7 @@ async function capture(browser, targetUrl, mode, warnings) {
       catch { await route.abort(); }
     });
     const page = await context.newPage();
+    page.on('crash', () => console.error('Chromium tab crashed:', mode));
     const response = await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
     if (!response) throw new Error('Strona nie zwróciła odpowiedzi.');
     if (response.status() >= 400) warnings.push(`${mode}: odpowiedź HTTP ${response.status()}.`);
