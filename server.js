@@ -329,6 +329,56 @@ async function prepareArticleShot(page, mode, warnings) {
   }
 }
 
+async function articleVisibility(page) {
+  return page.evaluate(() => {
+    const visible = el => {
+      if (!el) return false;
+      const style = getComputedStyle(el);
+      const box = el.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && box.width > 100 && box.height > 12;
+    };
+    const headline = [...document.querySelectorAll('h1')].find(el =>
+      visible(el) && !el.closest('nav,footer,[role="dialog"]'));
+    const body = [...document.querySelectorAll('article,[itemprop="articleBody"],main')]
+      .filter(visible).sort((a,b) => (b.querySelectorAll('p').length - a.querySelectorAll('p').length))[0];
+    const paragraphs = body ? [...body.querySelectorAll('p')].filter(el =>
+      visible(el) && (el.innerText || '').trim().length > 45).length : 0;
+    return { headline: Boolean(headline), paragraphs };
+  });
+}
+
+// A desktop navigation flyout can obscure or replace the article when a page
+// reacts to scrolling or consent. Recover the article rather than capture a menu.
+async function ensureVisibleArticle(page, mode, warnings) {
+  if (mode !== 'desktop') return;
+  let state = await articleVisibility(page);
+  if (state.headline && state.paragraphs >= 2) return;
+  console.warn('Desktop article missing, attempting recovery:', state, page.url());
+  await page.keyboard.press('Escape').catch(() => {});
+  const close = page.locator('button[aria-label*="zamknij" i],button[aria-label*="close" i],button[title*="zamknij" i],button[title*="close" i]').first();
+  if (await close.isVisible().catch(() => false)) await close.click({ timeout: 1000 }).catch(() => {});
+  await page.waitForTimeout(800);
+  state = await articleVisibility(page);
+  if (state.headline && state.paragraphs >= 2) return;
+  // Reload resets flyout UI and any page state mutated by lazy scrolling.
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+  await dismissConsent(page, mode, warnings);
+  await page.waitForTimeout(900);
+  state = await articleVisibility(page);
+  if (!state.headline || state.paragraphs < 2) {
+    // Some sites render only mobile/article content at medium-width layouts.
+    await page.setViewportSize({ width: 1024, height: 900 });
+    await page.waitForTimeout(1200);
+    state = await articleVisibility(page);
+    if (state.headline && state.paragraphs >= 2) {
+      warnings.push('desktop: użyto szerokości 1024px, bo układ 1440px ukrywał artykuł.');
+    }
+  }
+  if (!state.headline || state.paragraphs < 2) {
+    throw new Error('Desktop: strona pokazuje menu lub pusty widok zamiast artykułu. Nie zapisano błędnego screenshotu.');
+  }
+}
+
 async function getArticleClip(page, mode, warnings) {
   return await page.evaluate((mode) => {
     const vw = document.documentElement.clientWidth;
@@ -418,6 +468,8 @@ async function capture(browser, targetUrl, mode, warnings) {
     await prepareArticleShot(page, mode, warnings);
     await closeGuardianPrivacy(page, mode, warnings);
     await suppressGuardianConsentFrames(page, mode, warnings);
+    await ensureVisibleArticle(page, mode, warnings);
+    await prepareArticleShot(page, mode, warnings);
     const clip = await getArticleClip(page, mode, warnings);
     if (!clip.focused) warnings.push(`${mode}: nie znaleziono nagłówka artykułu; zapisano początek strony.`);
     if (clip.fullHeight > clip.y + Math.min(clip.height, SHOT_HEIGHT)) warnings.push(`${mode}: kadr ograniczono do ${SHOT_HEIGHT}px, aby zmieścił się na hostingu.`);
