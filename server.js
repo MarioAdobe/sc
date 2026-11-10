@@ -330,7 +330,7 @@ async function prepareArticleShot(page, mode, warnings) {
 }
 
 async function getArticleClip(page, mode, warnings) {
-  return await page.evaluate(() => {
+  return await page.evaluate((mode) => {
     const vw = document.documentElement.clientWidth;
     const total = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight);
     const visible = el => {
@@ -345,14 +345,17 @@ async function getArticleClip(page, mode, warnings) {
     const article = [...document.querySelectorAll('article,[itemprop="articleBody"],main')]
       .find(el => visible(el) && (h1 ? el.contains(h1) : true));
     const focus = h1 || article;
-    const y = focus ? Math.max(0, Math.floor(focus.getBoundingClientRect().top + scrollY - 160)) : 0;
+    // Mobile layouts may reposition the hero image above the headline. Starting
+    // from the article H1 can therefore crop the photo and top of the story.
+    // Capture from document top on mobile; keep desktop article framing intact.
+    const y = mode === 'mobile' ? 0 : (focus ? Math.max(0, Math.floor(focus.getBoundingClientRect().top + scrollY - 160)) : 0);
     // Restrict capture to article content instead of site-wide footer/navigation.
     const possibleEnd = article && article !== document.querySelector('main')
       ? Math.ceil(article.getBoundingClientRect().bottom + scrollY + 80) : total;
     const bottom = Math.min(total, Math.max(y + 500, possibleEnd));
     return { x: 0, y, width: vw, height: Math.min(6500, Math.max(1, bottom-y)),
       focused: Boolean(focus), fullHeight: total };
-  });
+  }, mode);
 }
 
 // Several small screenshots are stitched into one tall PNG. This avoids
