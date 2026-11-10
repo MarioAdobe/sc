@@ -6,7 +6,8 @@ import { chromium, devices } from 'playwright';
 import dns from 'node:dns/promises';
 import net from 'node:net';
 import ipaddr from 'ipaddr.js';
-import { Readable } from 'node:stream';
+import sharp from 'sharp';
+sharp.cache(false);
 
 const app = express();
 app.disable('x-powered-by');
@@ -16,9 +17,8 @@ app.use(express.json({ limit: '8kb' }));
 app.use('/api', rateLimit({ windowMs: 60_000, limit: 8, standardHeaders: 'draft-8', legacyHeaders: false }));
 app.get('/health', (_, res) => res.json({ ok: true }));
 
-const MAX_IMAGES = 40;
-const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
-const MAX_TOTAL_IMAGES = 16 * 1024 * 1024;
+const SHOT_HEIGHT = 4800; // Tall image for a vertical pan in After Effects.
+const TILE_HEIGHT = 700;
 let busy = false; // Limits expensive Chromium usage to one archive at a time.
 
 function blockedIp(address) {
@@ -221,16 +221,36 @@ async function getArticleClip(page, mode, warnings) {
   });
 }
 
-async function capture(browser, targetUrl, mode, images, state, warnings) {
+// Several small screenshots are stitched into one tall PNG. This avoids
+// large Playwright screenshot timeouts and never substitutes a 1px placeholder.
+async function captureTallImage(page, clip, mode) {
+  const height = Math.min(SHOT_HEIGHT, clip.height);
+  const tiles = [];
+  for (let offset = 0; offset < height; offset += TILE_HEIGHT) {
+    const tileHeight = Math.min(TILE_HEIGHT, height - offset);
+    const shot = await page.screenshot({
+      type: 'jpeg', quality: 90,
+      clip: { x: clip.x, y: clip.y + offset, width: clip.width, height: tileHeight },
+      animations: 'allow', caret: 'hide', timeout: 25000
+    });
+    tiles.push({ input: shot, top: offset, left: 0 });
+  }
+  if (!tiles.length) throw new Error(`${mode}: strona nie ma treści do zapisania.`);
+  return sharp({
+    create: { width: clip.width, height, channels: 3, background: '#ffffff' },
+    limitInputPixels: 45000000
+  }).composite(tiles).png({ compressionLevel: 6 }).toBuffer();
+}
+
+async function capture(browser, targetUrl, mode, warnings) {
   const mobile = mode === 'mobile';
   const context = await browser.newContext({
-    ...(mobile ? devices['iPhone 13'] : { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 }),
+    ...(mobile ? { ...devices['iPhone 13'], deviceScaleFactor: 1 } : { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 }),
     locale: 'pl-PL',
     serviceWorkers: 'block',
     acceptDownloads: false,
     ignoreHTTPSErrors: false
   });
-  const pending = new Set();
   try {
     await context.route('**/*', async route => {
       const req = route.request();
@@ -240,27 +260,6 @@ async function capture(browser, targetUrl, mode, images, state, warnings) {
       catch { await route.abort(); }
     });
     const page = await context.newPage();
-    page.on('response', response => {
-      const p = (async () => {
-        try {
-          const ct = response.headers()['content-type'] || '';
-          const ext = imageExtension(ct);
-          if (!ext || state.count >= MAX_IMAGES || state.bytes >= MAX_TOTAL_IMAGES) return;
-          const len = Number(response.headers()['content-length'] || 0);
-          if (len > MAX_IMAGE_BYTES) return;
-          const url = response.url();
-          if (images.has(url)) return;
-          const buffer = await response.body();
-          if (!buffer.length || buffer.length > MAX_IMAGE_BYTES) return;
-          if (state.count >= MAX_IMAGES || state.bytes + buffer.length > MAX_TOTAL_IMAGES) return;
-          images.set(url, { buffer, ext, contentType: ct });
-          state.count++;
-          state.bytes += buffer.length;
-        } catch { /* Some responses do not have readable bodies. */ }
-      })();
-      pending.add(p);
-      p.finally(() => pending.delete(p));
-    });
     const response = await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
     if (!response) throw new Error('Strona nie zwróciła odpowiedzi.');
     if (response.status() >= 400) warnings.push(`${mode}: odpowiedź HTTP ${response.status()}.`);
@@ -278,35 +277,9 @@ async function capture(browser, targetUrl, mode, images, state, warnings) {
     await prepareArticleShot(page, mode, warnings);
     const clip = await getArticleClip(page, mode, warnings);
     if (!clip.focused) warnings.push(`${mode}: nie znaleziono nagłówka artykułu; zapisano początek strony.`);
-    if (clip.fullHeight > clip.y + clip.height) warnings.push(`${mode}: screenshot obejmuje do ${clip.height}px od początku artykułu (limit pamięci).`);
-    // Long or animated news pages can make Playwright wait indefinitely for
-    // screenshot stability. Retry smaller captures and keep the ZIP usable.
-    let screenshot;
-    const attempts = [
-      { height: Math.min(clip.height, 4500), timeout: 12000 },
-      { height: Math.min(clip.height, 1800), timeout: 12000 },
-      { height: Math.min(clip.height, 850), timeout: 10000 }
-    ];
-    for (const [index, attempt] of attempts.entries()) {
-      try {
-        screenshot = await page.screenshot({
-          clip: { x: clip.x, y: clip.y, width: clip.width, height: attempt.height },
-          animations: 'allow',
-          caret: 'hide',
-          timeout: attempt.timeout
-        });
-        if (index > 0) warnings.push(`${mode}: długi screenshot nie powiódł się, zapisano krótszy kadr (${attempt.height}px).`);
-        break;
-      } catch (error) {
-        console.warn('Screenshot retry:', mode, index + 1, error.message);
-      }
-    }
-    if (!screenshot) {
-      // A correctly labelled 1x1 placeholder is better than aborting the entire
-      // archive. metadata.json records the failed capture explicitly.
-      screenshot = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/SxkAAAAASUVORK5CYII=', 'base64');
-      warnings.push(`${mode}: nie udało się wykonać screenshotu (placeholder 1x1px); pozostałe materiały zapisano.`);
-    }
+    if (clip.fullHeight > clip.y + Math.min(clip.height, SHOT_HEIGHT)) warnings.push(`${mode}: kadr ograniczono do ${SHOT_HEIGHT}px, aby zmieścił się na hostingu.`);
+    // Screenshot is the primary artifact. Failure must be explicit.
+    const screenshot = await captureTallImage(page, clip, mode);
     const data = await page.evaluate(() => {
       const root = document.querySelector('article') || document.querySelector('main') || document.body;
       const clone = root.cloneNode(true);
@@ -316,7 +289,6 @@ async function capture(browser, targetUrl, mode, images, state, warnings) {
       const text = raw.replace(/\u00a0/g, ' ').replace(/[ \t]+/g, ' ').replace(/\n[ \t]*\n[ \t]*\n+/g, '\n\n').trim();
       return { title: document.title || '', text, url: location.href, description: document.querySelector('meta[name="description"]')?.content || '' };
     });
-    await Promise.race([Promise.allSettled([...pending]), new Promise(resolve => setTimeout(resolve, 7000))]);
     return { screenshot, data };
   } finally { await context.close(); }
 }
@@ -333,26 +305,10 @@ app.post('/api/archive', async (req, res) => {
   let browser;
   try {
     browser = await chromium.launch({ headless: true, args: ['--disable-dev-shm-usage'] });
-    const images = new Map();
-    const state = { count: 0, bytes: 0 };
     const warnings = [];
-    const desktop = await capture(browser, url, 'desktop', images, state, warnings);
-    const mobile = await capture(browser, url, 'mobile', images, state, warnings);
+    const desktop = await capture(browser, url, 'desktop', warnings);
+    const mobile = await capture(browser, url, 'mobile', warnings);
     const text = desktop.data.text || mobile.data.text || '';
-    const title = desktop.data.title || mobile.data.title || '';
-    const meta = {
-      originalUrl: url,
-      finalDesktopUrl: desktop.data.url,
-      finalMobileUrl: mobile.data.url,
-      title,
-      description: desktop.data.description,
-      capturedAt: new Date().toISOString(),
-      desktopViewport: '1440x900',
-      mobileDevice: 'iPhone 13',
-      imageCount: images.size,
-      warnings,
-      note: 'Grafiki to pliki przechwycone podczas ładowania strony, niekoniecznie wszystkie pliki z serwera.'
-    };
     const archive = archiver('zip', { zlib: { level: 6 } });
     const base = `archiwum_${slugHost(url)}_${new Date().toISOString().slice(0, 10)}`;
     res.setHeader('Content-Type', 'application/zip');
@@ -362,16 +318,6 @@ app.post('/api/archive', async (req, res) => {
     archive.append(desktop.screenshot, { name: `${base}/desktop.png` });
     archive.append(mobile.screenshot, { name: `${base}/mobile.png` });
     archive.append(text + '\n', { name: `${base}/tekst.txt` });
-    archive.append(url + '\n', { name: `${base}/zrodlo.url` });
-    let index = 0;
-    const imageIndex = [];
-    for (const [source, image] of images) {
-      const name = `grafiki/obraz_${String(++index).padStart(3, '0')}.${image.ext}`;
-      archive.append(image.buffer, { name: `${base}/${name}` });
-      imageIndex.push({ file: name, source });
-    }
-    archive.append(JSON.stringify(imageIndex, null, 2), { name: `${base}/grafiki/indeks.json` });
-    archive.append(JSON.stringify(meta, null, 2), { name: `${base}/metadata.json` });
     await archive.finalize();
   } catch (err) {
     console.error('Archive error:', err);
