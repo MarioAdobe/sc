@@ -153,7 +153,7 @@ async function dismissConsent(page, mode, warnings) {
 }
 
 async function closeGuardianPrivacy(page, mode, warnings) {
-  if (!/(^|\\.)theguardian\\.com$/i.test(new URL(page.url()).hostname)) return;
+  if (!/(^|\.)theguardian\.com$/i.test(new URL(page.url()).hostname)) return;
   let handled = false;
   for (const frame of page.frames()) {
     try {
