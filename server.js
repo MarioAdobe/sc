@@ -473,7 +473,7 @@ async function capture(browser, targetUrl, mode, warnings) {
     // Sport.pl expands its desktop navigation when automatically scrolled.
     // For this publisher keep the original article state and load images eagerly
     // without traversing the mega-menu and footer.
-    if (mode === 'desktop' && /(^|\\.)sport\\.pl$/i.test(new URL(page.url()).hostname)) {
+    if (mode === 'desktop' && /(^|\.)sport\.pl$/i.test(new URL(page.url()).hostname)) {
       await page.evaluate(() => {
         for (const img of document.images) img.loading = 'eager';
         window.scrollTo(0, 0);
@@ -488,7 +488,7 @@ async function capture(browser, targetUrl, mode, warnings) {
     // Do not reload heavy news pages while archiving; a Render restart can
     // interrupt an in-flight request and surface as a 502.
     await prepareArticleShot(page, mode, warnings);
-    if (mode === 'desktop' && /(^|\\.)sport\\.pl$/i.test(new URL(page.url()).hostname)) {
+    if (mode === 'desktop' && /(^|\.)sport\.pl$/i.test(new URL(page.url()).hostname)) {
       const state = await articleVisibility(page);
       if (!state.headline || state.paragraphs < 2) {
         throw new Error('Sport.pl: zamiast artykułu widać menu. Desktop nie został zapisany; spróbuj ponownie.');
