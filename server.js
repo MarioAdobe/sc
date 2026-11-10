@@ -152,6 +152,84 @@ async function dismissConsent(page, mode, warnings) {
   }
 }
 
+async function closeGuardianPrivacy(page, mode, warnings) {
+  if (!/(^|\\.)theguardian\\.com$/i.test(new URL(page.url()).hostname)) return;
+  let handled = false;
+  for (const frame of page.frames()) {
+    try {
+      const heading = frame.getByText('Your privacy', { exact: true }).first();
+      if (!await heading.isVisible({ timeout: 350 })) continue;
+      for (const selector of ['button[aria-label*="close" i]', 'button[title*="close" i]', '[role="button"][aria-label*="close" i]']) {
+        try {
+          const button = frame.locator(selector).first();
+          if (await button.isVisible({ timeout: 200 })) {
+            await button.click({ timeout: 1200 });
+            handled = true;
+            break;
+          }
+        } catch {}
+      }
+      if (handled) break;
+      handled = await frame.evaluate(() => {
+        const heading = [...document.querySelectorAll('h1,h2,h3,div,p')]
+          .find(el => el.children.length === 0 && el.textContent?.trim() === 'Your privacy');
+        if (!heading) return false;
+        let box = heading;
+        for (let i = 0; i < 8 && box.parentElement; i++) {
+          box = box.parentElement;
+          const rect = box.getBoundingClientRect();
+          if ((box.innerText || '').includes('Do not sell or share my personal information') &&
+              rect.width > innerWidth * .45 && rect.height < innerHeight * .9) {
+            box.style.setProperty('display','none','important');
+            document.documentElement.style.setProperty('overflow','auto','important');
+            document.body.style.setProperty('overflow','auto','important');
+            return true;
+          }
+        }
+        return false;
+      });
+      if (handled) break;
+    } catch {}
+  }
+  if (handled) {
+    warnings.push(mode + ': zamknięto wizualnie baner prywatności The Guardian bez udzielania zgody.');
+    await page.waitForTimeout(400);
+  } else warnings.push(mode + ': nie udało się usunąć banera prywatności The Guardian.');
+}
+
+async function preloadArticleImages(page, mode, warnings) {
+  try {
+    await page.evaluate(() => {
+      for (const img of document.images) img.loading = 'eager';
+    });
+    const maxY = await page.evaluate(() => Math.min(5700, Math.max(document.body.scrollHeight, document.documentElement.scrollHeight)));
+    const step = await page.evaluate(() => Math.max(450, Math.round(innerHeight * .72)));
+    for (let y = 0; y < maxY; y += step) {
+      await page.evaluate(pos => window.scrollTo(0, pos), y);
+      await page.waitForTimeout(350);
+    }
+    await page.evaluate(() => window.scrollTo(0, 0));
+    const stats = await page.evaluate(async () => {
+      const imgs = [...document.images].filter(img => {
+        const r = img.getBoundingClientRect();
+        return r.top + scrollY < 5700 && r.width > 80 && r.height > 60;
+      });
+      await Promise.race([
+        Promise.all(imgs.map(img => img.complete ? Promise.resolve() :
+          new Promise(resolve => {
+            img.addEventListener('load', resolve, { once: true });
+            img.addEventListener('error', resolve, { once: true });
+          }))),
+        new Promise(resolve => setTimeout(resolve, 4500))
+      ]);
+      return { total: imgs.length, missing: imgs.filter(img => !img.complete || img.naturalWidth === 0).length };
+    });
+    if (stats.missing) warnings.push(mode + ': nie załadowano ' + stats.missing + '/' + stats.total + ' obrazów.');
+  } catch (error) {
+    warnings.push(mode + ': ładowanie zdjęć: ' + error.message);
+  }
+}
+
 // Prepare a stable article-focused screenshot without newsletter/promo overlays.
 async function prepareArticleShot(page, mode, warnings) {
   try {
@@ -276,17 +354,10 @@ async function capture(browser, targetUrl, mode, warnings) {
     if (!response) throw new Error('Strona nie zwróciła odpowiedzi.');
     if (response.status() >= 400) warnings.push(`${mode}: odpowiedź HTTP ${response.status()}.`);
     await dismissConsent(page, mode, warnings);
-    // Trigger lazy-loaded images without infinite scrolling.
-    await page.evaluate(async () => {
-      const step = Math.max(window.innerHeight, 600);
-      for (let y = 0; y < Math.min(document.documentElement.scrollHeight, 11000); y += step) {
-        window.scrollTo(0, y);
-        await new Promise(resolve => setTimeout(resolve, 120));
-      }
-      window.scrollTo(0, 0);
-    }).catch(() => {});
-    await page.waitForTimeout(700);
+    await closeGuardianPrivacy(page, mode, warnings);
+    await preloadArticleImages(page, mode, warnings);
     await prepareArticleShot(page, mode, warnings);
+    await closeGuardianPrivacy(page, mode, warnings);
     const clip = await getArticleClip(page, mode, warnings);
     if (!clip.focused) warnings.push(`${mode}: nie znaleziono nagłówka artykułu; zapisano początek strony.`);
     if (clip.fullHeight > clip.y + Math.min(clip.height, SHOT_HEIGHT)) warnings.push(`${mode}: kadr ograniczono do ${SHOT_HEIGHT}px, aby zmieścił się na hostingu.`);
