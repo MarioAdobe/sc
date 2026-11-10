@@ -100,6 +100,12 @@ async function dismissConsent(page, mode, warnings) {
             b.getBoundingClientRect().width * b.getBoundingClientRect().height)[0];
           const box = modal.getBoundingClientRect();
           if (box.width < 200 || box.height < 200) return false;
+          // Never hide page containers that hold the actual article.
+          // CMP wrappers must be modal, not a normal editorial main element.
+          const style = getComputedStyle(modal);
+          if (modal.matches('main,article') || modal.querySelector('article,h1') ||
+              !(['fixed','absolute','sticky'].includes(style.position) ||
+                modal.getAttribute('role') === 'dialog' || modal.getAttribute('aria-modal') === 'true')) return false;
           modal.style.setProperty('display', 'none', 'important');
           // Hide dimming layer only when it covers nearly the entire viewport.
           for (const el of document.querySelectorAll('div,section')) {
